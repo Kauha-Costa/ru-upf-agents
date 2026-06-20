@@ -1,0 +1,7 @@
+python-dotenv>=1.0.1
+mcp>=1.2.0
+ollama>=0.4.7
+playwright>=1.49.0
+chromadb>=0.5.23
+python-telegram-bot>=21.10
+Pillow>=11.0.0

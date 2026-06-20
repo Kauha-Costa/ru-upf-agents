@@ -1,0 +1,8 @@
+.venv/
+.env
+__pycache__/
+*.pyc
+data/vectorstore/
+data/cardapios/*.png
+data/cardapios/*.jpg
+.DS_Store
