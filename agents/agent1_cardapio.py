@@ -92,16 +92,15 @@ def _iniciar_consulta_cardapio(sessao: SessaoUsuario) -> str:
         # avisamos o usuário e não tentamos nada além disso.
         return disponibilidade["motivo"]
 
-    try:
-        imagens = buscar_imagens_cardapio()
-        cardapio_hoje = extrair_cardapio_do_dia(imagens["cardapio_semanal"])
-    except NotImplementedError:
-        # Ainda não implementado nesta fase do projeto.
-        logger.warning("Tools de busca/extração de cardápio ainda não implementadas (Fase 3).")
-        return (
-            "⚠️ Ainda estou sendo configurado para ler o cardápio automaticamente. "
-            "Essa parte será implementada na próxima fase do projeto."
-        )
+    imagens = buscar_imagens_cardapio()
+    if not imagens["sucesso"]:
+        logger.warning("Falha ao buscar imagens do cardápio: %s", imagens["erro"])
+        return f"⚠️ Não consegui acessar o cardápio agora. {imagens['erro']}"
+
+    cardapio_hoje = extrair_cardapio_do_dia(imagens["cardapio_dia"])
+    if not cardapio_hoje["sucesso"]:
+        logger.warning("Falha ao extrair cardápio do dia: %s", cardapio_hoje["erro"])
+        return f"⚠️ Não consegui ler o cardápio da imagem. {cardapio_hoje['erro']}"
 
     sessao.cardapio_hoje = cardapio_hoje
     sessao.estado = Estado.AGUARDANDO_CONFIRMACAO_RESERVA
@@ -167,8 +166,7 @@ def _formatar_cardapio(cardapio: dict) -> str:
     dia = config.DIA_SEMANA_PT[datetime.now().weekday()]
     return (
         f"🍽️ Cardápio de hoje ({dia.title()}):\n"
-        f"- Prato principal: {cardapio.get('prato_principal', '—')}\n"
-        f"- Acompanhamentos: {cardapio.get('acompanhamentos', '—')}\n"
+        f"- {cardapio.get('itens_principais', '—')}\n"
         f"- Salada: {cardapio.get('salada', '—')}\n"
         f"- Suco: {cardapio.get('suco', '—')}"
     )

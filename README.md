@@ -82,7 +82,7 @@ python -m orchestrator.main
 |---|---|---|
 | 1 | Setup de ambiente | ✅ |
 | 2 | Estrutura do repositório + servidor MCP + esqueleto Agente 1 | ✅ |
-| 3 | Integração Telegram real + automação Playwright (busca cardápio) + modelo de visão | ⏳ próxima |
+| 3 | Integração Telegram real + Playwright (busca cardápio) + modelo de visão | ✅ testado no Forms real |
 | 4 | Base de conhecimento + embeddings (RAG histórico) | ⏳ |
 | 5 | Agente 2 (preenchimento/envio do Forms) + handoff entre agentes | ⏳ |
 | 6 | Testes ponta a ponta | ⏳ |

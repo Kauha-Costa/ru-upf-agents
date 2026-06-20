@@ -58,21 +58,28 @@ def rodar_modo_telegram() -> None:
         )
         sys.exit(1)
 
-    # TODO (Fase 3): implementar com python-telegram-bot, algo como:
-    #
-    #   from telegram import Update
-    #   from telegram.ext import ApplicationBuilder, MessageHandler, filters
-    #
-    #   async def on_message(update: Update, context):
-    #       chat_id = str(update.effective_chat.id)
-    #       resposta = processar_mensagem(chat_id, update.message.text)
-    #       await update.message.reply_text(resposta)
-    #
-    #   app = ApplicationBuilder().token(config.TELEGRAM_BOT_TOKEN).build()
-    #   app.add_handler(MessageHandler(filters.TEXT, on_message))
-    #   logger.info("Bot iniciado. Aguardando mensagens...")
-    #   app.run_polling()
-    raise NotImplementedError("Integração real com Telegram será feita na Fase 3.")
+    from telegram import Update
+    from telegram.ext import ApplicationBuilder, ContextTypes, MessageHandler, filters
+
+    async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        chat_id = str(update.effective_chat.id)
+        texto = update.message.text or ""
+        logger.info("[%s] usuário: %s", chat_id, texto)
+
+        # processar_mensagem é síncrona (máquina de estados simples) — ok
+        # chamar direto dentro do handler assíncrono, não bloqueia muito
+        # tempo nesta fase (a parte pesada, Playwright/Ollama, é feita por
+        # baixo dela e ainda é rápida o suficiente para o uso esperado).
+        resposta = processar_mensagem(chat_id, texto)
+        logger.info("[%s] bot: %s", chat_id, resposta)
+
+        await update.message.reply_text(resposta)
+
+    app = ApplicationBuilder().token(config.TELEGRAM_BOT_TOKEN).build()
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_message))
+
+    logger.info("Bot iniciado. Aguardando mensagens no Telegram...")
+    app.run_polling()
 
 
 if __name__ == "__main__":

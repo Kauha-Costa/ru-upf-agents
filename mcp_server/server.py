@@ -11,7 +11,6 @@ Para rodar este servidor isoladamente (modo debug, sem o agente):
 """
 from __future__ import annotations
 
-import base64
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -61,55 +60,146 @@ def checar_horario_disponivel() -> dict:
 @mcp.tool()
 def buscar_imagens_cardapio() -> dict:
     """Abre a página 1 do Google Forms (URL fixa em config.FORMS_URL) via
-    automação de navegador e extrai as duas imagens publicadas nela: a
-    imagem do cardápio semanal e a imagem da legenda de símbolos. Salva
-    localmente e retorna os caminhos dos arquivos.
+    automação de navegador e extrai as imagens publicadas nela: a imagem do
+    cardápio semanal completa (para histórico/RAG), a legenda de símbolos, e
+    um recorte só da coluna do dia atual (Segunda a Sexta = 1/5 da largura
+    cada, na ordem). Recortar a coluna por geometria — em vez de pedir ao
+    modelo de visão para "achar" o dia certo — evita o erro mais comum dos
+    modelos pequenos, que é confundir/misturar colunas.
+
+    O cardápio semanal/legenda são salvos em disco nomeados pela SEMANA
+    (segunda-feira daquela semana), não pelo dia exato — como é a mesma
+    imagem de segunda a sexta, isso evita salvar 5 cópias idênticas por
+    semana (útil também como acervo para o RAG da Fase 4: 1 arquivo =
+    1 semana de histórico). O recorte do dia é só um artefato temporário
+    para a leitura do modelo de visão, então fica em memória (bytes),
+    sem ser persistido.
 
     Pré-condição: chamar checar_horario_disponivel() antes — se o Forms
     estiver fora da janela, a imagem não vai carregar.
     """
-    # TODO (Fase 3): implementar com Playwright real, algo como:
-    #   with sync_playwright() as p:
-    #       browser = p.chromium.launch()
-    #       page = browser.new_page()
-    #       page.goto(config.FORMS_URL)
-    #       imgs = page.locator("img").all()
-    #       ... salvar src/screenshot de cada <img> relevante em
-    #       config.CARDAPIOS_DIR ...
-    raise NotImplementedError(
-        "Implementar extração das imagens do Forms via Playwright (Fase 3)."
-    )
+    from datetime import timedelta
+    from playwright.sync_api import sync_playwright
+
+    agora = datetime.now()
+    dia_idx = agora.weekday()  # 0=Segunda ... 4=Sexta (bate com as colunas)
+    inicio_semana = (agora - timedelta(days=dia_idx)).date().isoformat()
+    caminho_semanal = config.CARDAPIOS_DIR / f"semanal_{inicio_semana}.png"
+    caminho_legenda = config.CARDAPIOS_DIR / f"legenda_{inicio_semana}.png"
+
+    # Limiar para distinguir as imagens grandes (cardápio/legenda) de ícones
+    # pequenos (logo da UPF, ícone de nuvem do Google, etc.). Ajuste se
+    # necessário depois de rodar o debug abaixo no formulário real.
+    LARGURA_MINIMA = 300
+    ALTURA_MINIMA = 150
+    N_COLUNAS = 5  # Segunda a Sexta
+
+    try:
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=True)
+            page = browser.new_page(viewport={"width": 1280, "height": 1600})
+            page.goto(config.FORMS_URL, wait_until="networkidle", timeout=20000)
+
+            candidatas = []
+            for img in page.locator("img").all():
+                try:
+                    box = img.bounding_box()
+                except Exception:
+                    box = None
+                if box and box["width"] >= LARGURA_MINIMA and box["height"] >= ALTURA_MINIMA:
+                    candidatas.append((box["y"], box, img))
+
+            candidatas.sort(key=lambda item: item[0])  # ordem visual: topo -> baixo
+
+            if len(candidatas) < 2:
+                browser.close()
+                return {
+                    "sucesso": False,
+                    "erro": (
+                        f"Esperava 2 imagens grandes na página 1 e encontrei "
+                        f"{len(candidatas)}. O formulário pode estar fechado ou "
+                        f"a estrutura da página mudou."
+                    ),
+                }
+
+            _, box_cardapio, img_cardapio = candidatas[0]
+            _, _, img_legenda = candidatas[1]
+            img_cardapio.screenshot(path=str(caminho_semanal))
+            img_legenda.screenshot(path=str(caminho_legenda))
+
+            # Recorte da coluna do dia: divide a largura da imagem do
+            # cardápio em N_COLUNAS partes iguais e captura só a fatia
+            # correspondente ao dia atual — fica em memória (bytes),
+            # não salva em disco (é descartável após a leitura).
+            largura_coluna = box_cardapio["width"] / N_COLUNAS
+            clip = {
+                "x": box_cardapio["x"] + dia_idx * largura_coluna,
+                "y": box_cardapio["y"],
+                "width": largura_coluna,
+                "height": box_cardapio["height"],
+            }
+            bytes_dia = page.screenshot(clip=clip)  # sem "path" -> retorna bytes
+
+            browser.close()
+    except Exception as exc:  # qualquer falha de navegação/timeout etc.
+        return {"sucesso": False, "erro": f"Falha ao acessar o Forms: {exc}"}
+
+    return {
+        "sucesso": True,
+        "cardapio_semanal": str(caminho_semanal),
+        "legenda": str(caminho_legenda),
+        "cardapio_dia": bytes_dia,
+    }
 
 
 @mcp.tool()
-def extrair_cardapio_do_dia(caminho_imagem_semanal: str) -> dict:
+def extrair_cardapio_do_dia(imagem_dia: bytes) -> dict:
     """Usa o modelo de visão local (config.VISION_MODEL via Ollama) para ler
-    a imagem do cardápio semanal e retornar APENAS os itens do dia atual
-    (entrada, salada, suco), já que a imagem traz a semana inteira
-    (Segunda a Sexta) em colunas.
+    o recorte da coluna do dia (já isolada por buscar_imagens_cardapio,
+    sem outras colunas/dias misturados) e transcrever os itens do cardápio.
     """
+    import json
+    import ollama
+
     dia_semana = config.DIA_SEMANA_PT[datetime.now().weekday()]
 
-    # TODO (Fase 3): chamar o Ollama com o modelo de visão, algo como:
-    #   import ollama
-    #   with open(caminho_imagem_semanal, "rb") as f:
-    #       img_b64 = base64.b64encode(f.read()).decode()
-    #   resposta = ollama.chat(
-    #       model=config.VISION_MODEL,
-    #       messages=[{
-    #           "role": "user",
-    #           "content": (
-    #               f"Esta imagem mostra o cardápio semanal do RU, com colunas "
-    #               f"por dia da semana. Extraia APENAS a coluna de {dia_semana}. "
-    #               f"Responda em JSON com as chaves: prato_principal, "
-    #               f"acompanhamentos, salada, suco."
-    #           ),
-    #           "images": [img_b64],
-    #       }],
-    #   )
-    raise NotImplementedError(
-        f"Implementar leitura da imagem via modelo de visão para {dia_semana} (Fase 3)."
+    schema = {
+        "type": "object",
+        "properties": {
+            "itens_principais": {"type": "string"},
+            "salada": {"type": "string"},
+            "suco": {"type": "string"},
+        },
+        "required": ["itens_principais", "salada", "suco"],
+    }
+
+    prompt = (
+        "Esta imagem é o recorte de UM ÚNICO dia do cardápio de um restaurante "
+        "universitário. Ela tem 3 blocos de texto, nessa ordem: "
+        "(1) 'MENU DO DIA' — lista de pratos (arroz, feijão, proteína e "
+        "acompanhamentos, tudo junto, sem distinção); "
+        "(2) 'SALADAS' — opções de salada; "
+        "(3) 'SUCO' — suco do dia.\n\n"
+        "Transcreva o conteúdo de cada bloco (NÃO repita os títulos 'MENU DO "
+        "DIA'/'SALADAS'/'SUCO'), em português, separando itens por vírgula, "
+        "exatamente como está escrito. Ignore ícones/símbolos pequenos ao "
+        "lado dos textos (só indicam informação nutricional, não fazem parte "
+        "do nome do prato). Responda apenas no JSON pedido."
     )
+
+    try:
+        resposta = ollama.chat(
+            model=config.VISION_MODEL,
+            messages=[{"role": "user", "content": prompt, "images": [imagem_dia]}],
+            format=schema,
+        )
+        dados = json.loads(resposta.message.content)
+    except Exception as exc:
+        return {"sucesso": False, "erro": f"Falha ao ler o cardápio com o modelo de visão: {exc}"}
+
+    dados["dia"] = dia_semana  # vem do relógio do sistema, não do modelo — sempre correto
+    dados["sucesso"] = True
+    return dados
 
 
 @mcp.tool()
@@ -125,10 +215,25 @@ def consultar_historico_cardapios(pergunta: str) -> dict:
 
 @mcp.tool()
 def enviar_mensagem_telegram(chat_id: str, texto: str) -> dict:
-    """Envia uma mensagem de texto formatada ao usuário, no chat_id indicado,
-    via Telegram Bot API."""
-    # TODO (Fase 3): implementar com python-telegram-bot (Bot(token).send_message)
-    raise NotImplementedError("Implementar envio via Telegram Bot API (Fase 3).")
+    """Envia uma mensagem de texto ao usuário, no chat_id indicado, via
+    Telegram Bot API. Usada para notificações proativas (ex: Agente 2
+    confirmando a reserva depois de algum tempo). Para a resposta imediata
+    de cada turno da conversa, o orquestrador usa reply_text diretamente —
+    ver orchestrator/main.py.
+    """
+    import requests
+
+    if not config.TELEGRAM_BOT_TOKEN:
+        return {"sucesso": False, "erro": "TELEGRAM_BOT_TOKEN não configurado no .env"}
+
+    url = f"https://api.telegram.org/bot{config.TELEGRAM_BOT_TOKEN}/sendMessage"
+    try:
+        resp = requests.post(url, json={"chat_id": chat_id, "text": texto}, timeout=10)
+        resp.raise_for_status()
+    except Exception as exc:
+        return {"sucesso": False, "erro": f"Falha ao enviar mensagem: {exc}"}
+
+    return {"sucesso": True}
 
 
 @mcp.tool()
