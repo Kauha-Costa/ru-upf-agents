@@ -209,8 +209,35 @@ def consultar_historico_cardapios(pergunta: str) -> dict:
     'esse prato contém glúten'. Usa embeddings locais (config.EMBED_MODEL)
     e o índice Chroma em config.VECTORSTORE_DIR.
     """
-    # TODO (Fase 4): implementar consulta real ao Chroma (ver rag/vectorstore.py)
-    raise NotImplementedError("Implementar consulta RAG ao histórico (Fase 4).")
+    import ollama
+    from rag.vectorstore import buscar_cardapios_similares
+
+    encontrados = buscar_cardapios_similares(pergunta, n_resultados=3)
+    if not encontrados:
+        return {
+            "sucesso": True,
+            "resposta": "Ainda não tenho histórico suficiente de cardápios pra responder isso.",
+        }
+
+    contexto = "\n".join(f"- {item['texto']}" for item in encontrados)
+    prompt = (
+        "Você é o assistente do RU da UPF. Use APENAS as informações abaixo "
+        "(histórico de cardápios) para responder à pergunta do usuário, em "
+        "português, de forma direta. Se a informação não estiver no "
+        "histórico, diga que não tem esse dado.\n\n"
+        f"Histórico disponível:\n{contexto}\n\n"
+        f"Pergunta: {pergunta}"
+    )
+
+    try:
+        resposta = ollama.chat(
+            model=config.LLM_MODEL,
+            messages=[{"role": "user", "content": prompt}],
+        )
+    except Exception as exc:
+        return {"sucesso": False, "erro": f"Falha ao consultar histórico: {exc}"}
+
+    return {"sucesso": True, "resposta": resposta.message.content}
 
 
 @mcp.tool()
@@ -242,9 +269,18 @@ def delegar_reserva_ao_agente2(nome: str, matricula: str, refeicao: str) -> dict
     'Almoço', 'Jantar' ou 'Almoço e jantar') ao Agente 2, que executa a
     reserva no Forms. Retorna o resultado (sucesso/erro) repassado pelo
     Agente 2.
+
+    Rechecá horário aqui (não só no início da conversa) porque o usuário
+    pode ter demorado a responder as perguntas e a janela pode ter
+    fechado nesse meio tempo.
     """
-    # TODO (Fase 5): chamar agents/agent2_reserva.py::executar_reserva(...)
-    raise NotImplementedError("Implementar handoff para o Agente 2 (Fase 5).")
+    disponibilidade = checar_horario_disponivel()
+    if not disponibilidade["disponivel"]:
+        return {"sucesso": False, "erro": disponibilidade["motivo"]}
+
+    from agents.agent2_reserva import executar_reserva
+
+    return executar_reserva(nome=nome, matricula=matricula, refeicao=refeicao)
 
 
 if __name__ == "__main__":

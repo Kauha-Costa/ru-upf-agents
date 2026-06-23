@@ -13,6 +13,7 @@ chamada pelos agentes, permitindo acompanhar o fluxo principal.
 """
 import logging
 import sys
+import asyncio
 
 import config
 from agents.agent1_cardapio import processar_mensagem
@@ -66,11 +67,10 @@ def rodar_modo_telegram() -> None:
         texto = update.message.text or ""
         logger.info("[%s] usuário: %s", chat_id, texto)
 
-        # processar_mensagem é síncrona (máquina de estados simples) — ok
-        # chamar direto dentro do handler assíncrono, não bloqueia muito
-        # tempo nesta fase (a parte pesada, Playwright/Ollama, é feita por
-        # baixo dela e ainda é rápida o suficiente para o uso esperado).
-        resposta = processar_mensagem(chat_id, texto)
+        # processar_mensagem é síncrona e usa Playwright/Ollama internamente.
+        # Para não executar código bloqueante dentro do loop async do bot,
+        # rodamos o fluxo completo em uma thread separada.
+        resposta = await asyncio.to_thread(processar_mensagem, chat_id, texto)
         logger.info("[%s] bot: %s", chat_id, resposta)
 
         await update.message.reply_text(resposta)

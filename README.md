@@ -1,108 +1,136 @@
-# Sistema de Reservas no RU/UPF — Agentes IA
+RU‑UPF Agents — Reserva automatizada de refeições
 
-> Trabalho Final de Inteligência Artificial — UPF 2026
-> Status: 🚧 em desenvolvimento (Fase 2 concluída — ver seção "Status do projeto")
+Trabalho Final — Disciplina de Inteligência Artificial — UPF 2026
 
-## O que é
+**Autores:** Kauhã De Costa, Tareck Alãa, Julia Laitharth
 
-Sistema multiagente que automatiza a reserva de refeição no Restaurante
-Universitário da UPF via Telegram: o usuário conversa com o bot, recebe o
-cardápio do dia (extraído automaticamente do Google Forms do RU) e, se
-confirmar, tem a reserva preenchida e enviada automaticamente — sem precisar
-acessar o formulário manualmente.
+---
 
-Dois agentes cooperam:
-- **Agente 1 (Cardápio)** — interface com o usuário, leitura do cardápio
-  (visão computacional local), histórico via RAG.
-- **Agente 2 (Reserva)** — automação do Google Forms (preenchimento e envio).
+Visão geral
+-----------
 
-## Setup do ambiente
+Este repositório contém uma solução multiagente para consultar o cardápio diário do Restaurante Universitário (RU) da UPF e automatizar o envio de reservas via Google Forms. O usuário interage por Telegram (ou terminal em modo demo) e o sistema cuida de extrair o cardápio (visão), consultar histórico (RAG) e, quando solicitado, preencher e submeter o formulário.
 
-### 1. Pré-requisitos
+Principais capacidades
+- Responder com o cardápio do dia (extraído do Forms).
+- Consultar histórico de cardápios via busca semântica (RAG).
+- Automatizar o preenchimento e envio de reservas no Google Forms (Playwright).
 
-**macOS**
+Rápido: o sistema faz tudo localmente (modelos via Ollama, índice via ChromaDB).
+
+Requisitos
+----------
+
+- macOS / Linux / Windows
+- Python 3.10+ (recomendado 3.11+)
+- Ollama rodando localmente com os modelos necessários
+- Playwright (Chromium)
+- Dependências Python em `requirements.txt`
+
+Instalação rápida (macOS / Linux)
+--------------------------------
+
 ```bash
-brew install python@3.11 git ollama
+# 1. Instale requisitos externos (ex.: Ollama)
 ollama serve &
-```
-
-**Windows**
-- Instale o Python 3.11+ em [python.org](https://python.org) (marque "Add to PATH").
-- Instale o Git em [git-scm.com](https://git-scm.com).
-- Instale o Ollama em [ollama.com/download/windows](https://ollama.com/download/windows)
-  (roda como serviço em background automaticamente — não precisa do `ollama serve &`).
-
-### 2. Modelos locais
-
-```bash
-ollama pull llama3.1:8b      # ou phi3:mini se sua máquina tiver pouca RAM
-ollama pull llava:7b         # ou moondream
+ollama pull llama3.1:8b      # ou phi3:mini em máquinas com pouca RAM
+ollama pull qwen2.5vl:3b
 ollama pull nomic-embed-text
-```
 
-### 3. Ambiente Python
-
-**macOS**
-```bash
+# 2. Ambiente Python
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 playwright install chromium
 ```
 
-**Windows (PowerShell)**
-```powershell
-python -m venv .venv
-.venv\Scripts\Activate.ps1
-pip install -r requirements.txt
-playwright install chromium
-```
+Configuração de ambiente
+------------------------
 
-### 4. Variáveis de ambiente
+Copie o arquivo de exemplo e preencha as variáveis:
 
 ```bash
 cp .env.example .env
+# Edite .env e preencha TELEGRAM_BOT_TOKEN e FORMS_URL
 ```
-Preencha `TELEGRAM_BOT_TOKEN` (gerado pelo @BotFather) e `FORMS_URL` (link
-fixo do Google Forms do RU).
 
-## Como executar
+Como rodar
+----------
+
+1) Modo Telegram (produção)
 
 ```bash
-# Modo terminal (simula a conversa do Telegram, sem precisar de bot real)
-python -m orchestrator.main --demo
-
-# Modo real (bot do Telegram)
 python -m orchestrator.main
 ```
 
-## Status do projeto
+O bot ficará disponível no Telegram e responderá ao usuário. Logs aparecem no terminal.
 
-| Fase | Item | Status |
-|---|---|---|
-| 1 | Setup de ambiente | ✅ |
-| 2 | Estrutura do repositório + servidor MCP + esqueleto Agente 1 | ✅ |
-| 3 | Integração Telegram real + Playwright (busca cardápio) + modelo de visão | ✅ testado no Forms real |
-| 4 | Base de conhecimento + embeddings (RAG histórico) | ⏳ |
-| 5 | Agente 2 (preenchimento/envio do Forms) + handoff entre agentes | ⏳ |
-| 6 | Testes ponta a ponta | ⏳ |
-| 7 | README final completo (todos os itens exigidos no PDF) | ⏳ |
+2) Modo demo (terminal, sem Telegram)
 
-> As funções ainda não implementadas levantam `NotImplementedError` de
-> propósito, com um comentário `TODO (Fase X)` indicando onde e como serão
-> completadas — isso mantém o sistema executável (modo demo já funciona,
-> só avisa o que falta) durante todo o desenvolvimento.
-
-## Estrutura
-
+```bash
+python -m orchestrator.main --demo
 ```
-ru-upf-agents/
-├── config.py                  # constantes, janelas de horário, modelos
-├── mcp_server/server.py       # tools do Agente 1 expostas via MCP
-├── agents/agent1_cardapio.py  # fluxo de conversa do Agente 1
-├── orchestrator/main.py       # entrypoint (Telegram / --demo)
-├── rag/                       # ingestão e consulta da base vetorial (Fase 4)
-└── data/
-    ├── cardapios/             # histórico de imagens do cardápio
-    └── vectorstore/           # índice Chroma
+
+3) Executar a suíte de testes (mockada — roda a qualquer hora)
+
+```bash
+pip install -r requirements.txt
+pytest tests/ -v
 ```
+
+4) Demo simulada (interactive)
+
+```bash
+python -m scripts.demo_simulado
+```
+
+Notas sobre latência
+---------------------------------------------
+
+O sistema pode demorar na primeira resposta por causa de operações pesadas feitas nessa etapa:
+
+- inicialização/carregamento do modelo Ollama usado para raciocínio e visão;
+- inicialização do navegador Playwright e carregamento do Google Forms;
+- execução da inferência de visão (extração do cardápio) e geração de embeddings.
+
+Essas etapas explicam por que o primeiro "oi" pode demorar.
+
+--------------------------------------
+
+- Use `python -m orchestrator.main --demo` ou `python -m scripts.demo_simulado` para demonstrar sem depender do horário do Forms.
+- Para testes que envolvam Playwright/Forms reais, faça primeiro `dry_run=True` nas chamadas à `executar_reserva` (Agente 2) para evitar envios reais.
+
+Como consultar o histórico
+-------------------------
+
+O histórico (RAG) armazena cardápios extraídos em dias anteriores e permite perguntas do tipo "o que teve na segunda passada?". A função pública é `consultar_historico_cardapios(pergunta: str) -> dict` em `mcp_server/server.py`.
+
+Exemplos práticos:
+
+- Via Python (ambiente configurado):
+
+```bash
+source .venv/bin/activate
+python -c "from mcp_server import server; print(server.consultar_historico_cardapios('o que teve na segunda passada?'))"
+```
+
+- Via bot (modo normal ou `--demo`): envie como primeira mensagem do chat uma pergunta de histórico, por exemplo:
+
+	"o que teve na segunda passada?"
+
+O retorno esperado é um dicionário JSON com `sucesso` e `resposta` (texto sintetizado). Se o índice estiver vazio, a resposta será uma mensagem informando que não há histórico suficiente.
+
+Para inspecionar os documentos brutos recuperados (debug):
+
+```python
+from rag.vectorstore import buscar_cardapios_similares
+print(buscar_cardapios_similares('o que teve na segunda passada?', n_resultados=3))
+```
+
+Requisitos para consultas reais:
+
+- Ollama disponível (para gerar embeddings e sintetizar a resposta);
+- ChromaDB disponível em `data/vectorstore/` com entradas indexadas.
+
+Se preferir, use `python -m scripts.demo_simulado` para ver o fluxo de histórico sem depender de serviços externos (útil para apresentação).
+

@@ -66,18 +66,24 @@ def processar_mensagem(chat_id: str, texto_usuario: str) -> str:
     para cada mensagem recebida. Retorna o texto de resposta do bot.
     """
     sessao = _get_sessao(chat_id)
-    texto_usuario = texto_usuario.strip().lower()
+    texto_usuario = texto_usuario.strip()
+    texto_lower = texto_usuario.lower()
 
     if sessao.estado == Estado.INICIO:
+        intencao = _classificar_intencao(texto_lower)
+        if intencao == "historico":
+            return _responder_historico(texto_usuario)
         return _iniciar_consulta_cardapio(sessao)
 
     if sessao.estado == Estado.AGUARDANDO_CONFIRMACAO_RESERVA:
-        return _tratar_confirmacao_reserva(sessao, texto_usuario)
+        return _tratar_confirmacao_reserva(sessao, texto_lower)
 
     if sessao.estado == Estado.AGUARDANDO_TIPO_REFEICAO:
-        return _tratar_tipo_refeicao(sessao, texto_usuario)
+        return _tratar_tipo_refeicao(sessao, texto_lower)
 
     if sessao.estado == Estado.AGUARDANDO_DADOS_CADASTRAIS:
+        # Preserva a caixa original aqui — "Kauhã Costa" não pode virar
+        # "kauhã costa" na hora de preencher o Forms.
         return _tratar_dados_cadastrais(sessao, texto_usuario)
 
     # Conversa já finalizada — reinicia o ciclo para uma nova consulta.
@@ -104,6 +110,8 @@ def _iniciar_consulta_cardapio(sessao: SessaoUsuario) -> str:
 
     sessao.cardapio_hoje = cardapio_hoje
     sessao.estado = Estado.AGUARDANDO_CONFIRMACAO_RESERVA
+
+    _ingerir_no_historico(cardapio_hoje)
 
     texto_cardapio = _formatar_cardapio(cardapio_hoje)
     return (
@@ -137,24 +145,19 @@ def _tratar_tipo_refeicao(sessao: SessaoUsuario, resposta: str) -> str:
 
     sessao.refeicao = refeicao
     sessao.estado = Estado.AGUARDANDO_DADOS_CADASTRAIS
-    return "Perfeito. Agora me informe seu nome completo e matrícula, separados por vírgula. Ex: Kauhã Costa, 203184"
+    return "Perfeito. Agora me informe seu nome completo e matrícula, separados por vírgula. Ex: João Silva, 123456"
 
 
 def _tratar_dados_cadastrais(sessao: SessaoUsuario, resposta: str) -> str:
     partes = [p.strip() for p in resposta.split(",")]
     if len(partes) != 2:
-        return "Formato inválido. Envie: Nome completo, matrícula (ex: Kauhã Costa, 203184)"
+        return "Formato inválido. Envie: Nome completo, matrícula (ex: João Silva, 123456)"
 
     sessao.nome, sessao.matricula = partes
 
-    try:
-        resultado = delegar_reserva_ao_agente2(
-            nome=sessao.nome, matricula=sessao.matricula, refeicao=sessao.refeicao
-        )
-    except NotImplementedError:
-        logger.warning("Handoff para o Agente 2 ainda não implementado (Fase 5).")
-        sessao.estado = Estado.FINALIZADO
-        return "⚠️ A etapa de reserva automática ainda será implementada na próxima fase."
+    resultado = delegar_reserva_ao_agente2(
+        nome=sessao.nome, matricula=sessao.matricula, refeicao=sessao.refeicao
+    )
 
     sessao.estado = Estado.FINALIZADO
     if resultado.get("sucesso"):
@@ -170,3 +173,63 @@ def _formatar_cardapio(cardapio: dict) -> str:
         f"- Salada: {cardapio.get('salada', '—')}\n"
         f"- Suco: {cardapio.get('suco', '—')}"
     )
+
+
+def _classificar_intencao(texto: str) -> str:
+    """Usa o LLM local (config.LLM_MODEL) para decidir se a mensagem é um
+    pedido do cardápio de HOJE ou uma pergunta sobre o HISTÓRICO (dias
+    passados). Só é chamado no início da conversa (estado INICIO) — é o
+    ponto de roteamento por LLM do sistema.
+    """
+    import json
+    import ollama
+
+    schema = {
+        "type": "object",
+        "properties": {"intencao": {"type": "string", "enum": ["hoje", "historico", "outro"]}},
+        "required": ["intencao"],
+    }
+    prompt = (
+        "Classifique a mensagem de um usuário de um bot de reservas do RU em "
+        "uma categoria:\n"
+        "- 'hoje': quer o cardápio de hoje, ou só iniciou a conversa "
+        "(ex: 'oi', 'cardápio', 'bom dia', 'quero reservar')\n"
+        "- 'historico': pergunta sobre um dia PASSADO específico ou pede "
+        "informação de um prato anterior (ex: 'o que teve segunda passada', "
+        "'tinha glúten na quarta')\n"
+        "- 'outro': qualquer outra coisa\n\n"
+        f'Mensagem: "{texto}"\n\nResponda apenas no JSON pedido.'
+    )
+    try:
+        resposta = ollama.chat(
+            model=config.LLM_MODEL,
+            messages=[{"role": "user", "content": prompt}],
+            format=schema,
+        )
+        return json.loads(resposta.message.content)["intencao"]
+    except Exception as exc:
+        logger.warning("Falha ao classificar intenção (%s); usando padrão 'hoje'.", exc)
+        return "hoje"  # fallback seguro: cai no fluxo principal
+
+
+def _responder_historico(pergunta: str) -> str:
+    resultado = consultar_historico_cardapios(pergunta)
+    if not resultado["sucesso"]:
+        return f"⚠️ Não consegui consultar o histórico. {resultado['erro']}"
+    return resultado["resposta"]
+
+
+def _ingerir_no_historico(cardapio: dict) -> None:
+    """Indexa o cardápio de hoje no histórico (RAG) pra alimentar consultas
+    futuras como 'o que teve segunda passada'. Best-effort: se falhar, não
+    deve travar a conversa principal."""
+    try:
+        from rag.vectorstore import adicionar_cardapio_dia
+
+        adicionar_cardapio_dia(
+            dia_semana=cardapio["dia"],
+            data_iso=datetime.now().date().isoformat(),
+            dados=cardapio,
+        )
+    except Exception as exc:
+        logger.warning("Falha ao indexar cardápio no histórico: %s", exc)
